@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Data files (large datasets should not be committed)
+*.edf
+*.fif
+*.set
+*.mat
+*.dat
+
+# Results and outputs (optional - you may want to track small CSVs)
+cleaned-dataset/
+*.tar.gz
+*.zip
+
+# Logs
+*.log
+nohup.out
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# MNE cache
+~/.mne_data/
+.mne_data/
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+
+# Plots (optional - you may want to track some figures)
+# *.png
+# *.pdf
+# *.jpg
+
+# Excel files (optional - small CSVs are usually fine to commit)
+# *.xlsx
+# *.xls
+
+# Specific to this project
+analysis_output/
+Phase1_Step1B_RepresentativeSubjects_Plots_figs/
+subject_configs.json
+selected_subjects_phase2.txt
