@@ -1,0 +1,867 @@
+"""
+Phase 1 - Step 1B: Representative Subject Visualization
+
+This script auto-selects one representative subject per frequency band dominance
+category and generates comprehensive visualization plots showing ERD patterns,
+discriminability profiles, and spectral characteristics.
+
+Purpose:
+    Create publication-quality figures that demonstrate why different subjects
+    respond optimally to different frequency bands. These plots provide visual
+    evidence for subject-specific frequency optimization in BCIs.
+
+Analysis Pipeline:
+    1. Load Step 1B results (band discriminability per subject)
+    2. Auto-select one representative subject per dominance category:
+       - Theta-dominant subject (best theta discriminability)
+       - Mu-dominant subject (best mu discriminability)
+       - Beta-low-dominant subject (best beta_low discriminability)
+       - Beta-high-dominant subject (best beta_high discriminability)
+    3. For each representative subject, generate 3 plots:
+       a) Time-frequency ERD contrast map (T1 vs T2)
+       b) Band-wise discriminability bar chart
+       c) PSD overlay (T1 vs T2) with shaded band regions
+    4. Optional: Generate montage snapshot showing channel layout
+
+Plot Details:
+    
+    Plot 1: Time-Frequency ERD Contrast Map
+        - Shows (T1 - T2) power difference over time and frequency
+        - Frequency range: 4-30 Hz (covers all tested bands)
+        - Time range: -0.5 to 4.0 s (full epoch)
+        - Averaged across motor-strip ROI
+        - Baseline-corrected (percent change)
+        - Reveals temporal dynamics of discriminability
+    
+    Plot 2: Band-wise Discriminability Bar Chart
+        - X-axis: Frequency bands (theta, mu, beta_low, beta_high, mu_beta)
+        - Y-axis: Mean |ERD_T1 - ERD_T2| (discriminability)
+        - Shows which band gives best separation for this subject
+        - Validates automatic band selection
+    
+    Plot 3: PSD Overlay (Power Spectral Density)
+        - Compares T1 (fists) vs T2 (feet) power spectra
+        - Shaded regions show tested frequency bands
+        - Welch method for robust spectral estimation
+        - Identifies frequency-specific modulation patterns
+
+Output Structure:
+    Phase1_Step1B_RepresentativeSubjects_Plots_figs/
+        ├── S023_theta/
+        │   ├── S023_Plot1_TFR_Contrast_T1minusT2.png
+        │   ├── S023_Plot2_BandDiscriminability.png
+        │   ├── S023_Plot3_PSD_T1vsT2.png
+        │   └── S023_Montage_motor_strip.png
+        ├── S045_mu/
+        │   ├── S045_Plot1_TFR_Contrast_T1minusT2.png
+        │   ├── S045_Plot2_BandDiscriminability.png
+        │   ├── S045_Plot3_PSD_T1vsT2.png
+        │   └── S045_Montage_motor_strip.png
+        ├── S067_beta_low/
+        │   └── [...]
+        └── S089_beta_high/
+            └── [...]
+
+Selection Criteria:
+    For each category (theta, mu, beta_low, beta_high):
+    1. Filter subjects where best_band == category
+    2. Sort by best_minus_baseline (improvement over mu_beta)
+    3. Select subject with highest improvement
+    
+    This ensures representative subjects show:
+    - Clear dominance in their category
+    - Strong evidence for narrow-band advantage
+    - Compelling visual demonstration
+
+Inputs:
+    1. Cleaned epochs: cleaned-dataset/SXXX/SXXXR05-epo.fif, R09, R13
+    2. Step 1B results: Phase1_Step1B_Task3_band_discriminability_motor_strip.xlsx
+
+Outputs:
+    - PNG figures (200 DPI) for each representative subject
+    - Organized in category-named subdirectories
+    - Publication-ready quality
+
+Important Notes:
+    - Requires Step 1B to be run first
+    - Uses same motor-strip ROI as Step 1B for consistency
+    - TFR computation can be memory-intensive for long epochs
+    - Figures optimized for inclusion in papers/presentations
+
+Author: Ram P Narayanan
+Date: 2026-02-08
+Version: 1.0.0
+License: MIT
+
+Dependencies:
+    - mne >= 1.5.0
+    - numpy >= 1.24.0
+    - pandas >= 2.0.0
+    - matplotlib >= 3.7.0
+    - openpyxl >= 3.1.0 (for Excel reading)
+
+Usage:
+    1. Run Phase1_Step1B_MultiBand_Analysis.py first
+    2. Edit clean_root path in CONFIGURATION section
+    3. Verify step1b_path points to Step 1B results file
+    4. Run: python Phase1_Step1B_Representative_Plots.py
+    5. Review figures in output directory
+    6. Use plots in presentations or publications
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import mne
+
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+# Path to cleaned dataset (output from preprocessing pipeline)
+# Structure: clean_root/SXXX/SXXXR05-epo.fif, SXXXR09-epo.fif, SXXXR13-epo.fif
+clean_root = Path(
+    r"YOUR_PATH_HERE/cleaned-dataset"
+)
+
+# Step 1B results file (Excel or CSV)
+# Generated by Phase1_Step1B_MultiBand_Analysis.py
+step1b_path = Path(__file__).with_name(
+    "Phase1_Step1B_Task3_band_discriminability_motor_strip.xlsx"
+)
+
+# Task 3 runs (real motor execution: fists vs feet)
+# R05 = Task 3, run 1
+# R09 = Task 3, run 2
+# R13 = Task 3, run 3
+runs_task3_real = ["R05", "R09", "R13"]
+
+# ============================================================================
+# CHANNEL CONFIGURATION
+# ============================================================================
+
+# Motor-strip ROI (same as Step 1B for consistency)
+# All plots use this channel set
+picks_motor_strip = ["C5", "C3", "C1", "Cz", "C2", "C4", "C6"]
+
+# ============================================================================
+# FREQUENCY BANDS (same as Step 1B)
+# ============================================================================
+
+# Dictionary of frequency bands tested
+# Used for discriminability bar chart and PSD shading
+bands = {
+    "theta": (4.0, 8.0),
+    "mu": (8.0, 13.0),
+    "beta_low": (13.0, 20.0),
+    "beta_high": (20.0, 30.0),
+    "mu_beta": (8.0, 30.0),  # baseline reference
+}
+
+# ============================================================================
+# TIME WINDOWS (same as Step 1B)
+# ============================================================================
+
+# Baseline window for ERD normalization
+baseline_win = (-0.5, 0.0)
+
+# Task window for ERD computation
+task_win = (0.5, 1.5)
+
+# ============================================================================
+# TFR (TIME-FREQUENCY REPRESENTATION) SETTINGS
+# ============================================================================
+
+# Frequency range for TFR analysis
+# Covers all tested bands: theta (4-8), mu (8-13), beta (13-30)
+tfr_freqs = np.arange(4.0, 31.0, 1.0)  # 4-30 Hz in 1 Hz steps
+
+# Number of cycles for Morlet wavelets
+# Trade-off: More cycles = better frequency resolution, worse time resolution
+# tfr_freqs / 2.0 gives reasonable compromise (3-15 cycles)
+tfr_n_cycles = tfr_freqs / 2.0
+
+# ============================================================================
+# OUTPUT CONFIGURATION
+# ============================================================================
+
+# Output directory (created next to script)
+# Will contain subdirectories for each representative subject
+out_dir = Path(__file__).with_suffix("").as_posix() + "_figs"
+out_dir = Path(out_dir)
+out_dir.mkdir(exist_ok=True, parents=True)
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def read_step1b(path: Path) -> pd.DataFrame:
+    """
+    Load Step 1B results from Excel or CSV.
+    
+    Parameters
+    ----------
+    path : Path
+        Path to Step 1B results file.
+    
+    Returns
+    -------
+    pd.DataFrame
+        Step 1B results with columns:
+        - subject, best_band, best_maxdiff, best_minus_baseline, etc.
+    
+    Raises
+    ------
+    FileNotFoundError
+        If Step 1B results file doesn't exist.
+    """
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Step 1B results file not found: {path}\n"
+            f"Run Phase1_Step1B_MultiBand_Analysis.py first."
+        )
+    
+    # Load based on file extension
+    if path.suffix.lower() == ".xlsx":
+        return pd.read_excel(path)
+    return pd.read_csv(path)
+
+
+def pick_representative_subjects(df: pd.DataFrame) -> dict[str, str | None]:
+    """
+    Select one representative subject per frequency band category.
+    
+    For each category (theta, mu, beta_low, beta_high), selects the subject
+    that shows:
+    1. Best band matches the category
+    2. Highest improvement over mu_beta baseline
+    
+    This ensures representative subjects demonstrate clear category dominance
+    with strong evidence for narrow-band optimization.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Step 1B results with best_band and best_minus_baseline columns.
+    
+    Returns
+    -------
+    dict
+        Mapping from category to subject ID.
+        Key: category name (str)
+        Value: subject ID (str) or None if no subjects in category
+    
+    Examples
+    --------
+    >>> reps = pick_representative_subjects(df)
+    >>> reps
+    {'theta': 'S023', 'mu': 'S045', 'beta_low': 'S067', 'beta_high': 'S089'}
+    """
+    reps: dict[str, str | None] = {}
+    
+    # For each dominance category
+    for cat in ["theta", "mu", "beta_low", "beta_high"]:
+        # Filter subjects where this band is optimal
+        sub = df[df["best_band"] == cat].copy()
+        
+        # No subjects in this category
+        if len(sub) == 0:
+            reps[cat] = None
+            continue
+        
+        # Sort by improvement over baseline (descending)
+        # Prefer subject with strongest evidence for this band
+        if "best_minus_baseline" in sub.columns:
+            sub = sub.sort_values("best_minus_baseline", ascending=False)
+        else:
+            # Fallback: sort by absolute discriminability
+            sub = sub.sort_values("best_maxdiff", ascending=False)
+        
+        # Select top subject
+        reps[cat] = str(sub.iloc[0]["subject"])
+    
+    return reps
+
+
+def load_concat_epochs(subject: str) -> mne.Epochs:
+    """
+    Load and concatenate Task 3 epochs for visualization.
+    
+    Parameters
+    ----------
+    subject : str
+        Subject ID (e.g., "S001").
+    
+    Returns
+    -------
+    mne.Epochs
+        Concatenated epochs with T1 and T2 events only.
+    
+    Raises
+    ------
+    FileNotFoundError
+        If no usable epochs found for any run.
+    """
+    epochs_list = []
+    
+    for run in runs_task3_real:
+        epo_path = clean_root / subject / f"{subject}{run}-epo.fif"
+        
+        # Skip if file doesn't exist
+        if not epo_path.exists():
+            continue
+        
+        # Load epochs
+        ep = mne.read_epochs(epo_path, preload=True, verbose="ERROR")
+        
+        # Verify T1 and T2 events exist
+        if "T1" not in ep.event_id or "T2" not in ep.event_id:
+            continue
+        
+        # Keep only Task 3 events
+        epochs_list.append(ep[["T1", "T2"]])
+    
+    if len(epochs_list) == 0:
+        raise FileNotFoundError(
+            f"No Task 3 epochs found for {subject} in runs {runs_task3_real}"
+        )
+    
+    return mne.concatenate_epochs(epochs_list)
+
+
+def ensure_picks(epochs: mne.Epochs, picks: list[str]) -> mne.Epochs:
+    """
+    Verify all requested channels exist and return picked epochs.
+    
+    Parameters
+    ----------
+    epochs : mne.Epochs
+        Input epochs.
+    picks : list of str
+        Required channel names.
+    
+    Returns
+    -------
+    mne.Epochs
+        Epochs with only requested channels.
+    
+    Raises
+    ------
+    RuntimeError
+        If any requested channels are missing.
+    """
+    missing = [ch for ch in picks if ch not in epochs.ch_names]
+    
+    if missing:
+        subj = epochs.info.get('subject_info', epochs.info.get('description', ''))
+        raise RuntimeError(
+            f"{subj} Missing required channels: {missing}\n"
+            f"Subject may have incomplete motor-strip montage."
+        )
+    
+    return epochs.copy().pick(picks)
+
+
+def bandpower_erd_percent(
+    epochs: mne.Epochs,
+    band: tuple[float, float]
+) -> np.ndarray:
+    """
+    Compute ERD% per epoch and channel for a frequency band.
+    
+    Used by bar chart plot to compute discriminability across bands.
+    
+    Parameters
+    ----------
+    epochs : mne.Epochs
+        Input epochs (single condition: T1 or T2).
+    band : tuple of float
+        Frequency band (low_freq, high_freq) in Hz.
+    
+    Returns
+    -------
+    np.ndarray
+        ERD% values (n_epochs, n_channels).
+    
+    Notes
+    -----
+    Pipeline:
+    1. Bandpass filter to target band
+    2. Hilbert transform for instantaneous power
+    3. Average power in baseline and task windows
+    4. Compute ERD%: (P_task - P_base) / P_base × 100
+    """
+    # Bandpass filter to frequency band
+    ep = epochs.copy().filter(
+        band[0], band[1],
+        fir_design="firwin",
+        verbose="ERROR"
+    )
+    
+    # Apply Hilbert transform (returns complex analytic signal)
+    ep.apply_hilbert(envelope=False, verbose="ERROR")
+    
+    # Get data and compute power
+    data = ep.get_data()
+    power = np.abs(data) ** 2
+    times = ep.times
+    
+    # Find samples in baseline and task windows
+    base_mask = (times >= baseline_win[0]) & (times <= baseline_win[1])
+    task_mask = (times >= task_win[0]) & (times <= task_win[1])
+    
+    if not base_mask.any() or not task_mask.any():
+        raise RuntimeError(
+            "Baseline/task window not found in epochs times. "
+            "Check tmin/tmax used in epoching matches these windows."
+        )
+    
+    # Average power in each window
+    p_base = power[..., base_mask].mean(axis=-1)
+    p_task = power[..., task_mask].mean(axis=-1)
+    
+    # Compute ERD%
+    erd = (p_task - p_base) / (p_base + 1e-12) * 100.0
+    
+    return erd
+
+
+# ============================================================================
+# Plotting Functions
+# ============================================================================
+
+def plot_band_bar(
+    subject: str,
+    ep_roi: mne.Epochs,
+    out_dir: Path
+):
+    """
+    Plot 2: Band-wise discriminability bar chart.
+    
+    Shows mean |ERD_T1 - ERD_T2| across channels for each frequency band.
+    Visually demonstrates which band gives best separation for this subject.
+    
+    Parameters
+    ----------
+    subject : str
+        Subject ID for title and filename.
+    ep_roi : mne.Epochs
+        Epochs with motor-strip channels only, both T1 and T2.
+    out_dir : Path
+        Directory to save figure.
+    """
+    # Split by condition
+    ep_t1 = ep_roi["T1"]
+    ep_t2 = ep_roi["T2"]
+    
+    deltas = []
+    labels = []
+    
+    # Compute discriminability for each band
+    for name, band in bands.items():
+        # Compute ERD for both conditions
+        erd1 = bandpower_erd_percent(ep_t1, band)
+        erd2 = bandpower_erd_percent(ep_t2, band)
+        
+        # Mean ERD per channel
+        mean1 = erd1.mean(axis=0)  # Shape: (n_channels,)
+        mean2 = erd2.mean(axis=0)
+        
+        # Mean absolute difference across channels
+        delta = np.abs(mean1 - mean2).mean()
+        
+        deltas.append(delta)
+        labels.append(name)
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(9, 4))
+    
+    # Bar chart
+    ax.bar(labels, deltas)
+    
+    # Formatting
+    ax.set_title(
+        f"{subject} – Band-wise ERD discriminability\n"
+        f"(mean |ΔERD| across {len(ep_roi.ch_names)} channels)"
+    )
+    ax.set_ylabel("Mean |ERD_T1 − ERD_T2| (%)")
+    ax.set_xlabel("Frequency Band")
+    ax.grid(True, axis="y", alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # Save figure
+    fig_path = out_dir / f"{subject}_Plot2_BandDiscriminability.png"
+    fig.savefig(fig_path, dpi=200)
+    plt.close(fig)
+
+
+def plot_psd_overlay(
+    subject: str,
+    ep_roi: mne.Epochs,
+    out_dir: Path
+):
+    """
+    Plot 3: PSD overlay showing T1 vs T2 power spectra.
+    
+    Compares spectral profiles of fists vs feet conditions with shaded
+    band regions. Reveals which frequencies show strongest modulation.
+    
+    Parameters
+    ----------
+    subject : str
+        Subject ID for title and filename.
+    ep_roi : mne.Epochs
+        Epochs with motor-strip channels only, both T1 and T2.
+    out_dir : Path
+        Directory to save figure.
+    """
+    # Split by condition
+    ep_t1 = ep_roi["T1"]
+    ep_t2 = ep_roi["T2"]
+    
+    # Compute PSD using Welch method
+    # Welch method: More robust than raw FFT
+    # - Splits data into overlapping segments
+    # - Computes FFT of each segment
+    # - Averages across segments for noise reduction
+    psd1 = ep_t1.compute_psd(
+        method="welch",
+        fmin=1,
+        fmax=45,
+        n_fft=512,
+        n_overlap=256,
+        verbose="ERROR"
+    )
+    psd2 = ep_t2.compute_psd(
+        method="welch",
+        fmin=1,
+        fmax=45,
+        n_fft=512,
+        n_overlap=256,
+        verbose="ERROR"
+    )
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(10, 4))
+    
+    # Plot PSDs (averaged across channels)
+    psd1.plot(
+        axes=ax,
+        average=True,
+        spatial_colors=False,
+        color="tab:blue",
+        show=False
+    )
+    psd2.plot(
+        axes=ax,
+        average=True,
+        spatial_colors=False,
+        color="tab:red",
+        show=False
+    )
+    
+    # Add shaded regions for frequency bands
+    # Alpha values: More transparent for higher bands (less visual clutter)
+    ax.axvspan(4, 8, alpha=0.15, color='gray', label="theta (4–8 Hz)")
+    ax.axvspan(8, 13, alpha=0.15, color='gray', label="mu (8–13 Hz)")
+    ax.axvspan(13, 20, alpha=0.12, color='gray', label="beta_low (13–20 Hz)")
+    ax.axvspan(20, 30, alpha=0.10, color='gray', label="beta_high (20–30 Hz)")
+    
+    # Formatting
+    ax.set_title(
+        f"{subject} – Power Spectral Density\n"
+        f"T1 (fists) vs T2 (feet) | motor-strip ROI"
+    )
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("Power (μV²/Hz)")
+    
+    # Legend with custom entries for conditions
+    ax.plot([], [], color="tab:blue", linewidth=2, label="T1 (fists)")
+    ax.plot([], [], color="tab:red", linewidth=2, label="T2 (feet)")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.grid(True, alpha=0.25)
+    
+    plt.tight_layout()
+    
+    # Save figure
+    fig_path = out_dir / f"{subject}_Plot3_PSD_T1vsT2.png"
+    fig.savefig(fig_path, dpi=200)
+    plt.close(fig)
+
+
+def plot_tfr_erd_contrast(
+    subject: str,
+    ep_roi: mne.Epochs,
+    out_dir: Path
+):
+    """
+    Plot 1: Time-frequency ERD contrast map (T1 - T2).
+    
+    Shows how discriminability evolves over time and frequency.
+    Reveals optimal time windows and frequency bands for this subject.
+    
+    Parameters
+    ----------
+    subject : str
+        Subject ID for title and filename.
+    ep_roi : mne.Epochs
+        Epochs with motor-strip channels only, both T1 and T2.
+    out_dir : Path
+        Directory to save figure.
+    
+    Notes
+    -----
+    TFR Computation:
+    - Uses Morlet wavelets (time-frequency trade-off)
+    - Number of cycles increases with frequency (constant resolution)
+    - Baseline correction in percent mode
+    - Averaged across channels and epochs per condition
+    
+    Interpretation:
+    - Positive values (red): T1 shows more desynchronization than T2
+    - Negative values (blue): T2 shows more desynchronization than T1
+    - Larger absolute values: Better discriminability
+    """
+    # Split by condition
+    ep_t1 = ep_roi["T1"]
+    ep_t2 = ep_roi["T2"]
+    
+    # Compute TFR for T1 (fists)
+    # Morlet wavelets provide good time-frequency resolution
+    tfr1 = mne.time_frequency.tfr_morlet(
+        ep_t1,
+        freqs=tfr_freqs,
+        n_cycles=tfr_n_cycles,
+        return_itc=False,  # Don't need inter-trial coherence
+        average=True,  # Average across epochs
+        decim=1,  # Use all samples (no decimation)
+        n_jobs=1,  # Single-threaded (more stable)
+        verbose="ERROR"
+    )
+    
+    # Compute TFR for T2 (feet)
+    tfr2 = mne.time_frequency.tfr_morlet(
+        ep_t2,
+        freqs=tfr_freqs,
+        n_cycles=tfr_n_cycles,
+        return_itc=False,
+        average=True,
+        decim=1,
+        n_jobs=1,
+        verbose="ERROR"
+    )
+    
+    # Apply baseline correction (percent mode)
+    # Percent mode: (P - P_baseline) / P_baseline × 100
+    tfr1.apply_baseline(baseline=baseline_win, mode="percent")
+    tfr2.apply_baseline(baseline=baseline_win, mode="percent")
+    
+    # Average across channels (motor-strip ROI)
+    p1 = tfr1.data.mean(axis=0)  # Shape: (n_freqs, n_times)
+    p2 = tfr2.data.mean(axis=0)
+    
+    # Compute contrast: T1 - T2
+    # Positive: T1 shows more desynchronization
+    # Negative: T2 shows more desynchronization
+    contrast = p1 - p2
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    
+    # Display contrast map
+    im = ax.imshow(
+        contrast,
+        aspect="auto",
+        origin="lower",
+        extent=[
+            tfr1.times[0],  # Time start
+            tfr1.times[-1],  # Time end
+            tfr_freqs[0],  # Frequency start
+            tfr_freqs[-1],  # Frequency end
+        ],
+        cmap='RdBu_r',  # Red-white-blue diverging colormap
+        vmin=-np.abs(contrast).max(),  # Symmetric color scale
+        vmax=np.abs(contrast).max()
+    )
+    
+    # Mark event onset
+    ax.axvline(0.0, color='black', linestyle='--', linewidth=1)
+    
+    # Formatting
+    ax.set_title(
+        f"{subject} – Time-Frequency ERD Contrast (T1 − T2)\n"
+        f"Baseline-corrected (%) | motor-strip average"
+    )
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Frequency (Hz)")
+    
+    # Add colorbar
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("Δ power (% baseline)\nT1 − T2")
+    
+    # Add horizontal lines for band boundaries
+    # Makes it easier to see which bands show strongest effects
+    for f in [8, 13, 20, 30]:
+        ax.axhline(f, color='black', linewidth=0.8, alpha=0.6, linestyle=':')
+    
+    plt.tight_layout()
+    
+    # Save figure
+    fig_path = out_dir / f"{subject}_Plot1_TFR_Contrast_T1minusT2.png"
+    fig.savefig(fig_path, dpi=200)
+    plt.close(fig)
+
+
+def plot_montage_snapshot(
+    ep_roi: mne.Epochs,
+    out_dir: Path,
+    subject: str
+):
+    """
+    Optional: Plot channel montage for reference.
+    
+    Shows spatial layout of motor-strip channels used in analysis.
+    Helps interpret which spatial patterns correspond to which channels.
+    
+    Parameters
+    ----------
+    ep_roi : mne.Epochs
+        Epochs with motor-strip channels and montage set.
+    out_dir : Path
+        Directory to save figure.
+    subject : str
+        Subject ID for filename.
+    """
+    try:
+        # Create sensor plot
+        fig = ep_roi.copy().average().plot_sensors(
+            show_names=True,
+            show=False
+        )
+        
+        # Save figure
+        fig_path = out_dir / f"{subject}_Montage_motor_strip.png"
+        fig.savefig(fig_path, dpi=200)
+        plt.close(fig)
+    except Exception as e:
+        print(f"[WARN] Could not create montage plot: {e}")
+
+
+# ============================================================================
+# Main Execution
+# ============================================================================
+
+if __name__ == "__main__":
+    
+    print("\n" + "="*70)
+    print("Phase 1 - Step 1B: Representative Subject Visualization")
+    print("="*70)
+    
+    # ========================================================================
+    # Step 1: Load Step 1B Results
+    # ========================================================================
+    df = read_step1b(step1b_path)
+    
+    # ========================================================================
+    # Step 2: Select Representative Subjects
+    # ========================================================================
+    reps = pick_representative_subjects(df)
+    
+    print("\nSelected representative subjects (one per dominance category):")
+    for cat, subj in reps.items():
+        if subj is None:
+            print(f"  {cat:10s}: [None found]")
+        else:
+            print(f"  {cat:10s}: {subj}")
+    
+    # ========================================================================
+    # Step 3: Generate Plots for Each Representative Subject
+    # ========================================================================
+    for cat, subj in reps.items():
+        if subj is None:
+            print(f"\n[SKIP] No subject found for category: {cat}")
+            continue
+        
+        print(f"\n{'='*70}")
+        print(f"Generating plots for {subj} ({cat} dominant)")
+        print(f"{'='*70}")
+        
+        try:
+            # ================================================================
+            # Step 3.1: Load and Prepare Epochs
+            # ================================================================
+            epochs = load_concat_epochs(subj)
+            epochs = ensure_picks(epochs, picks_motor_strip)
+            
+            # Try to set montage for spatial plots
+            try:
+                epochs.set_montage("standard_1020", on_missing="ignore")
+            except Exception:
+                pass  # Montage not critical for plots
+            
+            # ================================================================
+            # Step 3.2: Create Subject-Specific Output Directory
+            # ================================================================
+            plot_dir = out_dir / f"{subj}_{cat}"
+            plot_dir.mkdir(exist_ok=True, parents=True)
+            
+            # ================================================================
+            # Step 3.3: Generate Montage Snapshot (Optional)
+            # ================================================================
+            try:
+                plot_montage_snapshot(epochs, plot_dir, subj)
+                print("[1/4] Montage snapshot saved")
+            except Exception as e:
+                print(f"[1/4] Montage plot skipped: {e}")
+            
+            # ================================================================
+            # Step 3.4: Generate Plot 1 - TFR Contrast Map
+            # ================================================================
+            print("[2/4] Computing time-frequency representation...")
+            plot_tfr_erd_contrast(subj, epochs, plot_dir)
+            print("      TFR contrast map saved")
+            
+            # ================================================================
+            # Step 3.5: Generate Plot 2 - Band Discriminability
+            # ================================================================
+            print("[3/4] Computing band discriminability...")
+            plot_band_bar(subj, epochs, plot_dir)
+            print("      Band discriminability chart saved")
+            
+            # ================================================================
+            # Step 3.6: Generate Plot 3 - PSD Overlay
+            # ================================================================
+            print("[4/4] Computing power spectral density...")
+            plot_psd_overlay(subj, epochs, plot_dir)
+            print("      PSD overlay saved")
+            
+            print(f"\n[OK] All plots saved to: {plot_dir}")
+        
+        except Exception as e:
+            print(f"\n[ERROR] Failed to generate plots for {subj}: {e}")
+            continue
+    
+    # ========================================================================
+    # Final Summary
+    # ========================================================================
+    print("\n" + "="*70)
+    print("All done!")
+    print("="*70)
+    print(f"Figures root directory: {out_dir}")
+    print("\nGenerated plots:")
+    print("  Plot 1: Time-frequency ERD contrast (T1 - T2)")
+    print("  Plot 2: Band-wise discriminability bar chart")
+    print("  Plot 3: PSD overlay with shaded band regions")
+    print("  Optional: Channel montage snapshot")
+    print("\nUse these figures in:")
+    print("  - Research presentations")
+    print("  - Journal publications")
+    print("  - Grant proposals")
+    print("  - Technical reports")
+    print("="*70 + "\n")
