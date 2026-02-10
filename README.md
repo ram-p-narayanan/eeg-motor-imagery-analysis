@@ -393,42 +393,6 @@ def erd_percent(epochs, band):
 
 ---
 
-## Complete Workflow
-
-### Day 1: Preprocessing (8h overnight)
-```bash
-python EDIH_Preprocessing.py
-# Output: ~55 GB cleaned dataset
-```
-
-### Day 2 AM: Screening (2h)
-```bash
-python Task3_responder_screen.py
-# Review: dual responders ~40-60%
-```
-
-### Day 2 PM: Channel Analysis (1h)
-```bash
-python Phase1_Step1A_Channel_Comparison.py
-# Result: Extended improves ~60-70%
-```
-
-### Day 3 AM: Multi-Band (2h)
-```bash
-python Phase1_Step1B_MultiBand_Analysis.py
-# Result: Band distribution statistics
-```
-
-### Day 3 PM: Visualization (1h)
-```bash
-python Phase1_Step1B_Representative_Plots.py
-# Output: Publication-quality figures
-```
-
-**Total**: ~14 hours (mostly automated)
-
----
-
 ## Troubleshooting
 
 **"No usable epochs"**
