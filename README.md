@@ -10,9 +10,10 @@ This repository contains production-ready tools for analyzing motor imagery EEG 
 
 - **Automated Preprocessing**: Batch processing with ICA-based artifact removal and ICLabel classification
 - **Multi-Band ERD Analysis**: Subject-specific frequency optimization (theta, mu, beta_low, beta_high)
+- **ERD Validation**: Statistical validation against multiple baseline conditions (pre-cue, eyes-open, eyes-closed)
 - **Responder Screening**: Automated dual-responder classification based on ERD thresholds
 - **Channel Set Comparison**: Minimal vs. extended sensorimotor montage analysis
-- **Publication-Quality Plots**: TFR contrast maps, discriminability charts, and PSD overlays
+- **Publication-Quality Plots**: TFR contrast maps, discriminability charts, PSD overlays, and validation plots
 - **Proxy ECG Extraction**: Heartbeat component reconstruction from ICA sources
 - **Comprehensive Documentation**: Detailed docstrings and inline comments in all scripts
 
@@ -42,6 +43,7 @@ numpy >= 1.24.0
 pandas >= 2.0.0
 matplotlib >= 3.7.0
 scipy >= 1.10.0
+seaborn >= 0.12.0
 
 # Recommended for full functionality
 mne-icalabel >= 0.4.0  # ICLabel component classification
@@ -61,7 +63,7 @@ conda create -n eeg_analysis python=3.10
 conda activate eeg_analysis
 
 # Install dependencies
-pip install mne numpy pandas matplotlib scipy openpyxl
+pip install mne numpy pandas matplotlib scipy seaborn openpyxl
 pip install mne-icalabel autoreject
 ```
 
@@ -83,6 +85,7 @@ eeg-motor-imagery-analysis/
 ├── Phase1_Step1A_Channel_Comparison.py         # Minimal vs Extended channels
 ├── Phase1_Step1B_MultiBand_Analysis.py         # Multi-band discriminability
 ├── Phase1_Step1B_Representative_Plots.py       # Visualization (TFR, PSD, etc.)
+├── Phase1_ERD_Validation.py                    # ERD validation vs baselines
 │
 └── docs/
     ├── PREPROCESSING.md                         # Preprocessing documentation
@@ -157,6 +160,18 @@ python Phase1_Step1B_Representative_Plots.py
 ```
 
 **Output**: Publication-quality figures in `Phase1_Step1B_Representative_Plots_figs/`
+
+### 7. ERD Validation (Baseline Comparison)
+
+```python
+# Edit CLEAN_ROOT path in Phase1_ERD_Validation.py
+python Phase1_ERD_Validation.py
+```
+
+**Output**: 
+- `Phase1_results/Phase1_responder_validation_summary.csv`
+- `Phase1_results/baseline_comparison_plots/` (top 20 subjects)
+- `Phase1_results/Phase1_population_summary.png`
 
 ---
 
@@ -331,6 +346,166 @@ dpi = 200  # Change to 300 for publication
 
 ---
 
+### Phase1_ERD_Validation.py
+
+**Purpose**: Validate that Task 3 ERD is task-specific by comparing against multiple baseline conditions
+
+**Research Question**:
+Is the observed ERD during motor execution significantly different from spontaneous activity during resting baseline conditions (not just general arousal)?
+
+**Key Features**:
+- Compares task execution against **three independent baselines**:
+  1. **Pre-cue rest** (-0.5 to 0s): Within-task baseline
+  2. **Eyes-open resting** (R01): Alert, relaxed state
+  3. **Eyes-closed resting** (R02): Relaxed, high alpha state
+- Tests statistical significance using Mann-Whitney U test
+- Classifies subjects into responder categories (strong/moderate/weak/non-responder)
+- Analyzes ERD across multiple time windows (early/peak/late)
+- Generates validation plots for top 20 responders
+
+**Validation Strategy**:
+If ERD is truly task-specific (not just arousal or attention):
+- Should show strong ERD vs pre-cue baseline
+- Should show significantly lower power than both resting states
+- Should be statistically significant (p < 0.05) in multiple channels
+
+**Time Windows**:
+```python
+PRECUE_WINDOW = (-0.5, 0.0)          # Within-task baseline
+TASK_WINDOWS = {
+    'early': (0.5, 1.5),             # Movement onset
+    'peak': (1.0, 2.0),              # Sustained contraction (EXPECTED PEAK)
+    'late': (1.5, 2.5)               # Movement offset
+}
+```
+
+**Classification Criteria**:
+
+**Strong Responder**:
+- ERD < -20% (strong desynchronization)
+- Significant vs BOTH resting baselines (p < 0.05)
+- In ≥3 channels (spatial consistency)
+- **BCI Potential**: Excellent
+
+**Moderate Responder**:
+- ERD < -20%
+- Significant vs BOTH resting baselines
+- In 1-2 channels (limited spatial extent)
+- **BCI Potential**: Good with channel selection
+
+**Weak Responder**:
+- ERD < -20% (adequate desynchronization)
+- NOT statistically significant
+- **BCI Potential**: Marginal, may improve with training
+
+**Non-Responder**:
+- ERD ≥ -20% (weak or no desynchronization)
+- **BCI Potential**: Poor, try different tasks
+
+**Outputs**:
+
+**1. CSV Summary**: `Phase1_responder_validation_summary.csv`
+```
+Columns:
+- subject, n_fists, n_feet, n_eo_epochs, n_ec_epochs
+- responder_category (strong/moderate/weak/non-responder)
+- n_significant_channels (how many channels meet criteria)
+- best_channel (strongest ERD channel)
+- best_ch_erd_fists, best_ch_erd_feet (ERD% for best channel)
+- best_ch_contrast_eo_fists, best_ch_contrast_ec_fists (vs baselines)
+- best_ch_pval_fists_eo, best_ch_pval_fists_ec (statistical tests)
+- mean_erd_fists_early, mean_erd_fists_peak, mean_erd_fists_late
+- mean_erd_feet_early, mean_erd_feet_peak, mean_erd_feet_late
+```
+
+**2. Per-Subject Plots**: `Phase1_results/baseline_comparison_plots/`
+- Generated for top 20 responders (ranked by peak ERD)
+- 4-panel validation layout per subject:
+
+**Panel A**: ERD vs Pre-Cue Baseline
+- Bar chart showing ERD% per channel
+- Separate bars for fists (blue) and feet (orange)
+- Threshold line at -20%
+- Shows within-task ERD pattern
+
+**Panel B**: Contrast vs Eyes-Open Baseline
+- Tests if task differs from alert resting state
+- Negative values = task < resting (expected)
+
+**Panel C**: Contrast vs Eyes-Closed Baseline
+- Tests if task differs from relaxed resting state
+- Eyes-closed often has higher mu power (paradoxical)
+
+**Panel D**: ERD Temporal Evolution
+- Line plot showing ERD across early/peak/late windows
+- Validates temporal consistency
+- Peak window should show strongest ERD
+
+**3. Population Summary**: `Phase1_population_summary.png`
+- 3-panel aggregate statistics:
+  * Responder distribution (pie chart)
+  * ERD strength distribution (violin plot by category)
+  * Best channel frequency (bar chart)
+
+**Expected Results** (typical for EEGMMIDB):
+- Strong responders: ~20-30%
+- Moderate responders: ~20-25%
+- Weak responders: ~15-20%
+- Non-responders: ~25-35%
+- Total BCI-viable: ~60-75%
+- Best channels: C3, Cz, C4 most common
+
+**Statistical Method**:
+```python
+# Mann-Whitney U test (non-parametric)
+# Tests if task power < baseline power
+# Robust to outliers, no normality assumption
+pval = mannwhitneyu(task_power, baseline_power, alternative='less')
+
+# Significance criterion
+significant = (pval < 0.05)  # Standard alpha level
+```
+
+**Why Three Baselines?**:
+1. **Pre-cue**: Controls for task engagement and attention
+2. **Eyes-open**: Controls for general arousal and visual input
+3. **Eyes-closed**: Controls for alpha rhythm and relaxation
+   - Eyes-closed typically has higher mu/alpha power
+   - Task should still show lower power (validates motor-specific ERD)
+
+**Interpretation Example**:
+```python
+import pandas as pd
+df = pd.read_csv("Phase1_results/Phase1_responder_validation_summary.csv")
+
+# Strong responders for BCI applications
+strong = df[df['responder_category'] == 'strong']
+print(f"Strong responders: {len(strong)} subjects")
+print(f"Mean peak ERD: {strong['mean_erd_fists_peak'].mean():.1f}%")
+
+# Top 5 subjects by ERD strength
+top5 = df.nsmallest(5, 'mean_erd_fists_peak')
+print(top5[['subject', 'responder_category', 'mean_erd_fists_peak', 'best_channel']])
+
+# Channel distribution
+print(df['best_channel'].value_counts())
+```
+
+**Usage**:
+```bash
+# Edit CLEAN_ROOT path in script
+python Phase1_ERD_Validation.py
+
+# Outputs created:
+# - Phase1_results/Phase1_responder_validation_summary.csv
+# - Phase1_results/baseline_comparison_plots/SXXX_validation.png (top 20)
+# - Phase1_results/Phase1_population_summary.png
+```
+
+**Runtime**: ~3-5 hours for 109 subjects (~2-3 min per subject + 30s per plot × 20)
+
+---
+
 ## Preprocessing Pipeline
 
 The `EDIH_Preprocessing.py` script performs 16 steps:
@@ -411,15 +586,26 @@ def erd_percent(epochs, band):
 - Subject may be non-responder (~25%)
 - Verify with QC plots
 
+**"All subjects classified as non-responder" (ERD Validation)**
+- Check ERD_THRESHOLD setting (default: -20%)
+- Verify time windows are correct
+- Review baseline run quality (R01, R02)
+- May need to adjust thresholds for specific dataset
+
+**"Missing baseline runs R01/R02"**
+- Ensure preprocessing included baseline runs
+- Check `cleaned-dataset/SXXX/SXXXR01-cleaned_raw.fif` exists
+- R01 = eyes open, R02 = eyes closed (both required)
+
 ---
 
 ## Citation
 
 ```bibtex
 @misc{eeg_motor_imagery_pipeline,
-  author = {Your Name},
+  author = {Ram P Narayanan},
   title = {EEG Motor Imagery Analysis Pipeline},
-  year = {2026},
+  year = {2025-2026},
   publisher = {GitHub},
   url = {https://github.com/yourusername/eeg-motor-imagery-analysis}
 }
@@ -462,4 +648,4 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 ---
 
-**Last Updated**: February 2026 | **Version**: 1.0.0
+**Last Updated**: February 2026 | **Version**: 1.0.1
